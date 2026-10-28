@@ -189,11 +189,20 @@ def agent_id(code, month):
 
 # ---------------------------------------------------------------- geocoding
 
+CACHE_VERSION = 2
+
+
 def load_cache():
     try:
-        return json.load(open(CACHE_PATH))
+        cache = json.load(open(CACHE_PATH))
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        cache = {}
+    if cache.get("_version") != CACHE_VERSION:
+        # Version 1 wrongly rejected good matches: retry everything it marked as a miss
+        cache = {k: v for k, v in cache.items() if v and not k.startswith("_")}
+        cache["_version"] = CACHE_VERSION
+        log("Address cache upgraded; previous misses will be looked up again.")
+    return cache
 
 
 def save_cache(cache):
@@ -207,6 +216,34 @@ def save_cache(cache):
             f.write(",\n" if i < len(items) - 1 else "\n")
         f.write("}\n")
     os.replace(tmp, CACHE_PATH)
+
+
+STREET_TYPES = {"ST", "STREET", "AVE", "AV", "AVENUE", "PL", "PLACE", "RD", "ROAD", "BLVD", "BOULEVARD",
+                "PKWY", "PARKWAY", "CT", "COURT", "DR", "DRIVE", "LN", "LANE", "TER", "TERRACE", "PLZ", "PLAZA",
+                "SQ", "SQUARE", "HWY", "HIGHWAY", "EXPY", "EXPRESSWAY", "WAY", "WALK", "LOOP", "ROW", "CIR", "CIRCLE"}
+DIRECTIONS = {"E", "EAST", "W", "WEST", "N", "NORTH", "S", "SOUTH"}
+
+
+def street_words(s):
+    """Distinctive words of a street name: 'E 19TH ST' -> {'19'}, 'AVE J' -> {'J'}."""
+    words = set()
+    for w in re.findall(r"[A-Z0-9]+", (s or "").upper()):
+        w = re.sub(r"^(\d+)(ST|ND|RD|TH)$", r"\1", w)
+        if w not in STREET_TYPES and w not in DIRECTIONS:
+            words.add(w)
+    return words
+
+
+def good_match(key, p):
+    """The service always returns its best guess, so check it is the same address:
+    same house number and at least one distinctive street word in common."""
+    hn_q, _, st_q = key.partition(" ")
+    hn_r = p.get("housenumber") or p.get("house_number") or (p.get("name") or "").split(" ")[0]
+    if re.sub(r"\s+", "", str(hn_r)).upper() != hn_q:
+        return False
+    st_r = p.get("street") or (p.get("name") or "").partition(" ")[2]
+    q, r = street_words(st_q), street_words(st_r)
+    return bool(q & r) if q else True
 
 
 GEO_SESSION = requests.Session()
@@ -227,9 +264,7 @@ def geocode_one(key):
         f = feats[0]
         p = f.get("properties", {})
         lon, lat = f["geometry"]["coordinates"][:2]
-        if p.get("layer") and p["layer"] != "address":
-            return key, 0
-        if p.get("match_type") == "fallback":
+        if not good_match(key, p):
             return key, 0
         if (p.get("borough") or CFG["borough_name"]).lower() != CFG["borough_name"].lower():
             return key, 0
