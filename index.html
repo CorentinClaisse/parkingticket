@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Brooklyn parking ticket map</title>
+<meta name="description" content="Where, when and on which rounds parking tickets get written in Brooklyn, from public NYC Open Data.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🅿️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<link href="style.css" rel="stylesheet">
+</head>
+<body>
+<div id="map" aria-label="Map of parking tickets"></div>
+
+<aside id="panel" aria-label="Filters and details">
+  <header class="masthead">
+    <h1>Brooklyn ticket map</h1>
+    <button id="collapse" class="ghost" aria-expanded="true" aria-controls="panel-body">Hide</button>
+  </header>
+
+  <div id="panel-body">
+    <nav class="tabs" aria-label="Sections">
+      <button type="button" id="tab-explore" aria-pressed="true">Explore the map</button>
+      <button type="button" id="tab-game" aria-pressed="false">Daily game</button>
+    </nav>
+
+    <div id="explore">
+      <div class="search">
+        <label for="q" class="sr">Search an address</label>
+        <input id="q" type="search" placeholder="Search an address, like 300 Court St" autocomplete="off">
+        <ul id="results" role="listbox" hidden></ul>
+      </div>
+      <p class="hint">Search an address or tap anywhere on the map for a ticket forecast.</p>
+
+      <section class="filters" aria-label="Filters">
+        <div class="field">
+          <span class="field-name">Days</span>
+          <div id="days" class="chips" role="group" aria-label="Days of the week"></div>
+        </div>
+        <div class="field">
+          <span class="field-name">Hours <output id="hours-out"></output></span>
+          <div class="range">
+            <label class="sr" for="h0">From hour</label>
+            <input id="h0" type="range" min="0" max="23" value="0">
+            <label class="sr" for="h1">To hour</label>
+            <input id="h1" type="range" min="0" max="23" value="23">
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-name" for="vio">Ticket type</label>
+          <select id="vio"><option value="all">All types</option></select>
+        </div>
+        <p id="total" class="total" aria-live="polite"></p>
+      </section>
+
+      <section id="place" hidden aria-live="polite"></section>
+
+      <section class="rounds" aria-label="Agent rounds">
+        <h2>Agent rounds</h2>
+        <p class="hint">Each agent has a random ID that resets every month. Pick one to replay their route.</p>
+        <div class="field">
+          <label class="field-name" for="agent">Agent</label>
+          <select id="agent"><option value="">Choose an agent</option></select>
+        </div>
+        <div class="field" id="day-field" hidden>
+          <label class="field-name" for="aday">Day</label>
+          <select id="aday"></select>
+        </div>
+        <div id="agent-info"></div>
+        <ol id="stops"></ol>
+      </section>
+
+      <footer id="about"></footer>
+    </div>
+
+    <section id="game" hidden aria-live="polite"></section>
+  </div>
+</aside>
+
+<div id="loading" role="status">Loading tickets</div>
+
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
