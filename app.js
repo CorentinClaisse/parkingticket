@@ -259,6 +259,8 @@
       $("collapse").setAttribute("aria-expanded", String(!c));
     };
     $("tab-explore").onclick = () => setTab("explore");
+    $("tab-plan").onclick = () => setTab("plan");
+    setupPlanner();
     $("tab-game").onclick = () => setTab("game");
 
     $("about").innerHTML =
@@ -313,7 +315,19 @@
         layout: { "text-field": ["get", "label"], "text-size": 11, "text-font": ["Noto Sans Regular"], "text-allow-overlap": true },
         paint: { "text-color": "#1d2024" } });
 
+      map.addSource("plan", { type: "geojson", data: empty() });
+      map.addLayer({ id: "plan-pins", type: "circle", source: "plan",
+        paint: { "circle-radius": ["case", ["get", "car"], 9, 12], "circle-color": ["get", "color"], "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5 } });
+      map.addLayer({ id: "plan-num", type: "symbol", source: "plan",
+        layout: { "text-field": ["get", "label"], "text-size": 12, "text-font": ["Noto Sans Regular"], "text-allow-overlap": true },
+        paint: { "text-color": "#ffffff" } });
+
       map.on("click", (e) => {
+        if (tab === "plan") {
+          const pin = map.queryRenderedFeatures(e.point, { layers: ["plan-pins"] }).find((f) => f.properties.k >= 0);
+          if (pin) return focusOption(pin.properties.k);
+          return setCar([e.lngLat.lng, e.lngLat.lat]);
+        }
         if (tab !== "explore") return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ["dots"] });
         if (hit.length) selectSpot(hit[0].properties.i);
@@ -359,11 +373,13 @@
       <h3>${esc(label)}</h3>
       ${i !== null ? `<p class="sub">Precinct ${esc(LOC.pr[i] || "unknown")}</p>` : ""}
       ${forecastHTML(c)}
+      <button type="button" id="plan-here" class="secondary">My car is here: plan a move</button>
       ${detail}
       ${contestHTML()}
     </div>`;
     $("fc-d").onchange = (ev) => { FC.d = +ev.target.value; showSelection(); };
     $("fc-h").onchange = (ev) => { FC.h = +ev.target.value; showSelection(); };
+    $("plan-here").onclick = () => { setCar(c, label); setTab("plan"); };
   }
 
   function spotDetail(i) {
@@ -551,19 +567,266 @@
     q.onblur = () => setTimeout(close, 150);
   }
 
+  // ---------------------------------------------------------------- move my car
+  // Tickets that depend on the spot's rules (street cleaning, meters, posted hours).
+  // Left out: tickets that depend on exactly where you stop or on your car's paperwork.
+  const NOT_SPOT = new Set([19, 40, 45, 46, 47, 48, 50, 51, 53, 67, 98, 70, 71, 74]);
+  // Tickets that show cars normally park on a block
+  const PARKING_SIGNS = new Set([20, 21, 37, 38, 69, 70, 71, 74]);
+  const WALK_M_PER_MIN = 80;
+  let car = null, PLAN = null;
+  const until = { d: 1, h: 18 };
+
+  const ADDR = new Map();
+  function parseAddr(label) {
+    if (ADDR.has(label)) return ADDR.get(label);
+    const m = /^(\d+)(?:-\d+)?[A-Za-z]?\s+(.+)$/.exec(label || "");
+    const r = m ? { hn: +m[1], street: m[2].toUpperCase(), side: +m[1] % 2 } : null;
+    ADDR.set(label, r);
+    return r;
+  }
+  const metres = (a, b) => {
+    const kx = Math.cos(a[1] * Math.PI / 180) * 111320;
+    return Math.hypot((a[0] - b[0]) * kx, (a[1] - b[1]) * 110540);
+  };
+  const RATE = new Map();
+  // Expected spot-rule tickets per hour of the week at one address, plus per-code detail
+  function rates(i) {
+    if (RATE.has(i)) return RATE.get(i);
+    const all = new Float64Array(168), byCode = new Map();
+    let parked = 0;
+    const e = LOC.e[i];
+    for (let j = 0; j < e.length; j += 2) {
+      const [, , v, how] = split(e[j]), n = e[j + 1];
+      if (PARKING_SIGNS.has(v)) parked += n;
+      if (NOT_SPOT.has(v)) continue;
+      all[how] += n / WEEKS;
+      if (!byCode.has(v)) byCode.set(v, new Float64Array(168));
+      byCode.get(v)[how] += n / WEEKS;
+    }
+    const r = { all, byCode, parked };
+    RATE.set(i, r);
+    return r;
+  }
+
+  function nyDayLabel(k) {
+    const t = Date.parse(nyDate() + "T12:00:00Z") + k * 864e5;
+    const s = new Date(t).toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
+    return k === 0 ? "Today, " + s : k === 1 ? "Tomorrow, " + s : s;
+  }
+  // Hours of the week covered from now until the chosen time
+  function windowSlots() {
+    const now = nyNow(), hours = until.d * 24 + until.h - now.h;
+    const out = [];
+    for (let k = 0; k < Math.min(hours, 168); k++) out.push((now.d * 24 + now.h + k) % 168);
+    return out;
+  }
+  const untilText = () => `${DAYS[(nyNow().d + until.d) % 7]} ${fmtH(until.h)}`;
+
+  function setupPlanner() {
+    const ds = $("until-d"), hs = $("until-h");
+    ds.innerHTML = Array.from({ length: 8 }, (_, k) => `<option value="${k}">${nyDayLabel(k)}</option>`).join("");
+    hs.innerHTML = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${fmtH(h)}</option>`).join("");
+    const sync = () => { ds.value = until.d; hs.value = until.h; };
+    sync();
+    ds.onchange = () => { until.d = +ds.value; runPlan(); };
+    hs.onchange = () => { until.h = +hs.value; runPlan(); };
+    document.querySelectorAll("#plan .quick button").forEach((b) => (b.onclick = () => {
+      const q = b.dataset.q, today = nyNow().d;
+      if (q === "morning") { until.d = 1; until.h = 8; }
+      if (q === "evening") { until.d = 1; until.h = 18; }
+      if (q === "monday") { until.d = ((7 - today) % 7) || 7; until.h = 8; }
+      sync(); runPlan();
+    }));
+    $("car-locate").onclick = () => {
+      if (!navigator.geolocation) { $("car-where").textContent = "Your browser can’t share your location. Tap the map instead."; return; }
+      $("car-where").textContent = "Finding you…";
+      navigator.geolocation.getCurrentPosition(
+        (pos) => { const c = [pos.coords.longitude, pos.coords.latitude]; setCar(c); map.flyTo({ center: c, zoom: 16.5 }); },
+        () => { $("car-where").textContent = "Couldn’t get your location. Tap the map where your car is."; },
+        { enableHighAccuracy: true, timeout: 10000 });
+    };
+  }
+
+  function setCar(c, label) {
+    const i = nearest(c, 40);
+    car = { c: i !== null ? LOC.p[i] : c, i, label: label || (i !== null ? LOC.l[i] : "Your car") };
+    $("car-where").textContent = car.label;
+    runPlan();
+  }
+
+  // Risk on one side of a block: same street, same odd/even side, within ~60 m
+  function sideGroup(i, pool) {
+    const a = parseAddr(LOC.l[i]);
+    if (!a) return null;
+    const out = [];
+    for (const j of pool) {
+      const b = parseAddr(LOC.l[j]);
+      if (b && b.street === a.street && b.side === a.side && metres(LOC.p[i], LOC.p[j]) <= 60) out.push(j);
+    }
+    return { addr: a, members: out };
+  }
+  function riskOf(members, slots) {
+    let lam = 0, parked = 0;
+    const perSlot = new Float64Array(slots.length), byCode = new Map();
+    for (const j of members) {
+      const r = rates(j);
+      parked += r.parked;
+      slots.forEach((s, k) => { perSlot[k] += r.all[s]; lam += r.all[s]; });
+      for (const [v, arr] of r.byCode) {
+        let x = byCode.get(v);
+        if (!x) byCode.set(v, (x = new Float64Array(slots.length)));
+        slots.forEach((s, k) => (x[k] += arr[s]));
+      }
+    }
+    return { p: 1 - Math.exp(-lam), perSlot, byCode, parked };
+  }
+  // The single biggest threat: which ticket type, and when
+  function threat(risk, slots) {
+    let best = null, bestSum = 0;
+    for (const [v, arr] of risk.byCode) {
+      const sum = arr.reduce((a, b) => a + b, 0);
+      if (sum > bestSum) { bestSum = sum; best = v; }
+    }
+    if (best === null || bestSum < 0.02) return null;
+    const arr = risk.byCode.get(best);
+    let peak = 0;
+    arr.forEach((x, k) => { if (x > arr[peak]) peak = k; });
+    let a = peak, b = peak;
+    while (a > 0 && arr[a - 1] >= 0.25 * arr[peak]) a--;
+    while (b < arr.length - 1 && arr[b + 1] >= 0.25 * arr[peak]) b++;
+    const d = (slots[a] / 24) | 0;
+    return `${VLABEL[best] || "Code " + best}, ${DAY_NAMES[d]} ${fmtH(slots[a] % 24)} to ${fmtH((slots[b] % 24) + 1)}`;
+  }
+
+  function timeline(risk, slots) {
+    const per = Math.max(1, Math.ceil(slots.length / 48)), cells = [];
+    for (let k = 0; k < slots.length; k += per) {
+      let lam = 0;
+      for (let q = k; q < Math.min(k + per, slots.length); q++) lam += risk.perSlot[q];
+      const p = 1 - Math.exp(-lam), s = slots[k];
+      cells.push(`<span class="${level(p).cls}${s % 24 === 0 ? " midnight" : ""}" title="${DAYS[(s / 24) | 0]} ${fmtH(s % 24)}: ${pct(p)}"></span>`);
+    }
+    return `<div class="tl" style="grid-template-columns: repeat(${cells.length}, 1fr)">${cells.join("")}</div>
+      <div class="axis"><span>Now</span><span>${untilText()}</span></div>`;
+  }
+
+  function runPlan() {
+    const out = $("plan-out");
+    if (!out || !LOC) return;
+    if (!car) { out.innerHTML = ""; drawPlan([]); return; }
+    const slots = windowSlots();
+    if (!slots.length) { out.innerHTML = `<p class="hint">Pick a time later than now.</p>`; return; }
+
+    const pool = near(car.c, 650);
+    // Your spot
+    let mine, sideNote = "";
+    const g = car.i !== null ? sideGroup(car.i, pool) : null;
+    if (g && g.members.length) {
+      mine = riskOf(g.members, slots);
+      sideNote = `${g.addr.side ? "Odd" : "Even"}-numbered side of ${g.addr.street.toLowerCase().replace(/\b\w/g, (x) => x.toUpperCase())}`;
+    } else {
+      mine = riskOf(near(car.c, 75), slots);
+      sideNote = "Couldn’t tell which side of the street you’re on, so this covers both sides of the block";
+    }
+    const lv = level(mine.p), th = threat(mine, slots);
+
+    // Safer options within a short walk
+    const seen = new Set(g ? g.members : []), cands = [];
+    const groups = new Map();
+    for (const i of pool) {
+      if (seen.has(i)) continue;
+      const a = parseAddr(LOC.l[i]);
+      if (!a) continue;
+      const key = a.street + "|" + a.side;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(i);
+    }
+    for (const list of groups.values()) {
+      for (const i of list) {
+        const sg = sideGroup(i, list);
+        if (!sg) continue;
+        const r = riskOf(sg.members, slots);
+        if (r.parked < 6) continue;               // cars don't normally park here
+        const walk = Math.max(1, Math.round(metres(car.c, LOC.p[i]) * 1.3 / WALK_M_PER_MIN));
+        cands.push({ i, a: sg.addr, r, walk, score: r.p + walk * 0.01 });
+      }
+    }
+    cands.sort((x, y) => x.score - y.score);
+    const picks = [];
+    for (const c of cands) {
+      if (c.r.p >= mine.p - 0.05) continue;     // must be clearly safer than staying
+      if (picks.some((p) => p.a.street === c.a.street && p.a.side === c.a.side && metres(LOC.p[p.i], LOC.p[c.i]) < 200)) continue;
+      picks.push(c);
+      if (picks.length === 5) break;
+    }
+    const carAddr = car.i !== null ? parseAddr(LOC.l[car.i]) : null;
+    picks.forEach((c) => {
+      const street = c.a.street.toLowerCase().replace(/\b\w/g, (x) => x.toUpperCase());
+      if (carAddr && c.a.street === carAddr.street && c.a.side !== carAddr.side && metres(car.c, LOC.p[c.i]) < 90) c.name = "Across the street";
+      else if (carAddr && c.a.street === carAddr.street && c.a.side === carAddr.side) c.name = `Further along ${street}, same side`;
+      else c.name = `${street}, ${c.a.side ? "odd" : "even"} side near no. ${c.a.hn}`;
+      c.threat = threat(c.r, slots);
+      c.tl = timeline(c.r, slots);
+    });
+    PLAN = { picks, slots };
+
+    out.innerHTML = `<div class="plate">
+        <h3>${esc(car.label)}</h3>
+        <p class="sub">${esc(sideNote)}. Now until ${untilText()}.</p>
+        <div class="fc-big ${lv.cls}">${pct(mine.p)}<span>chance of a ticket if you stay</span></div>
+        <p class="threat">${th ? `Biggest risk: <b>${esc(th)}</b>.` : "No regular ticketing here during this time."}</p>
+        ${timeline(mine, slots)}
+        ${mine.p >= 0.35 && !picks.length ? garageHTML(car.c) : ""}
+      </div>
+      <h3 class="opts-title">${picks.length ? "Safer spots within a short walk" : "No clearly safer blocks nearby"}</h3>
+      ${picks.length ? `<ol class="options">${picks.map((c, k) => `
+        <li><button type="button" class="option" data-k="${k}">
+          <span class="pin ${level(c.r.p).cls}">${k + 1}</span>
+          <span class="o-main"><b>${esc(c.name)}</b><span>${pct(c.r.p)} until ${untilText()}, ${c.walk} min walk</span></span>
+        </button><div class="o-more" hidden>${c.threat ? `<p>Biggest risk there: ${esc(c.threat)}.</p>` : `<p>No regular ticketing there during this time.</p>`}${c.tl}</div></li>`).join("")}</ol>`
+      : `<p class="hint">${mine.p < 0.1 ? "Your spot already looks low risk for this time." : "Nothing within a short walk is clearly safer for this time."}</p>`}
+      <p class="fine">Counts tickets for the block’s parking rules: street cleaning, meters and posted hours. Leaves out tickets for hydrants, driveways, bus stops, double parking and car paperwork, which depend on exactly where you stop or on your car. Shows where to look, not whether a space is free. Always check the signs.</p>`;
+    out.querySelectorAll(".option").forEach((b) => (b.onclick = () => focusOption(+b.dataset.k)));
+    drawPlan(picks);
+  }
+
+  function drawPlan(picks) {
+    if (!map || !map.getSource("plan")) return;
+    const color = (p) => ({ low: "#00744a", med: "#b8860b", high: "#c4122f" }[level(p).cls]);
+    const feats = picks.map((c, k) => ({ type: "Feature", geometry: { type: "Point", coordinates: LOC.p[c.i] },
+      properties: { k, label: String(k + 1), color: color(c.r.p), car: false } }));
+    if (car) feats.push({ type: "Feature", geometry: { type: "Point", coordinates: car.c }, properties: { k: -1, label: "", color: "#1d2024", car: true } });
+    map.getSource("plan").setData({ type: "FeatureCollection", features: feats });
+    if (car && picks.length) fit([car.c, ...picks.map((c) => LOC.p[c.i])]);
+  }
+
+  function focusOption(k) {
+    if (!PLAN || !PLAN.picks[k]) return;
+    document.querySelectorAll("#plan-out .option").forEach((b, n) => {
+      b.setAttribute("aria-pressed", String(n === k));
+      b.nextElementSibling.hidden = n !== k;
+    });
+    map.flyTo({ center: LOC.p[PLAN.picks[k].i], zoom: 17 });
+    $("panel").classList.remove("collapsed");
+  }
+
   // ---------------------------------------------------------------- tabs
   let tab = "explore";
   function setTab(t) {
     tab = t;
-    $("tab-explore").setAttribute("aria-pressed", String(t === "explore"));
-    $("tab-game").setAttribute("aria-pressed", String(t === "game"));
-    $("explore").hidden = t !== "explore";
-    $("game").hidden = t !== "game";
+    ["explore", "game", "plan"].forEach((x) => {
+      $("tab-" + x).setAttribute("aria-pressed", String(t === x));
+      $(x).hidden = t !== x;
+    });
     // Hide the heat map during the game so it doesn't give answers away
-    ["heat", "dots", "route-line", "route-stops", "route-num"].forEach((id) => {
-      if (map && map.getLayer(id)) map.setLayoutProperty(id, "visibility", t === "game" ? "none" : "visible");
+    const show = { heat: t !== "game", dots: t !== "game", "route-line": t === "explore", "route-stops": t === "explore",
+      "route-num": t === "explore", "plan-pins": t === "plan", "plan-num": t === "plan" };
+    Object.entries(show).forEach(([id, on]) => {
+      if (map && map.getLayer(id)) map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
     });
     if (t === "game") startGame();
+    else if (t === "plan") { ring(null); if (!car && selection) setCar(selection.c, selection.label); else runPlan(); }
     else ring(selection ? selection.c : null);
     $("panel").classList.remove("collapsed");
   }

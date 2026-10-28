@@ -217,3 +217,37 @@ footer a { color: inherit; }
 .ac-meta { font-size: 0.9rem; color: var(--muted); }
 #all-agents { margin: 14px 0 6px; }
 #all-agents summary { cursor: pointer; font-weight: 600; }
+
+/* Move my car */
+.tabs { grid-template-columns: 1.25fr 1fr 1fr; }
+.secondary {
+  margin-top: 8px; padding: 7px 12px; border: 2px solid var(--ink); border-radius: 8px;
+  background: var(--plate); font-weight: 600; cursor: pointer;
+}
+.plate .secondary { width: 100%; margin: 0 0 12px; }
+.car-where { margin: 0; font-weight: 600; }
+.quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.quick button { padding: 4px 10px; border: 2px solid var(--ink); border-radius: 999px; background: var(--plate); cursor: pointer; font-weight: 600; }
+.threat { margin: 8px 0; }
+.tl { display: grid; gap: 1px; margin-top: 6px; }
+.tl span { height: 22px; background: var(--rule); }
+.tl span.low { background: var(--green); }
+.tl span.med { background: var(--curb); }
+.tl span.high { background: var(--red); }
+.tl span.midnight { box-shadow: inset 2px 0 0 var(--ink); }
+.opts-title { margin: 18px 0 6px; font-size: 1.15rem; }
+.options { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.option {
+  width: 100%; display: flex; gap: 10px; align-items: center; text-align: left; padding: 8px 10px;
+  border: 2px solid var(--ink); border-radius: 8px; background: var(--plate); cursor: pointer;
+}
+.option[aria-pressed="true"] { outline: 3px solid var(--curb); }
+.pin {
+  flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  color: #fff; font-weight: 700; border: 2px solid #fff; box-shadow: 0 0 0 2px var(--ink);
+}
+.pin.low { background: #00744a; } .pin.med { background: #b8860b; } .pin.high { background: #c4122f; }
+.o-main { display: grid; }
+.o-main span { color: var(--muted); }
+.o-more { padding: 6px 4px 2px; }
+.o-more p { margin: 0 0 4px; }

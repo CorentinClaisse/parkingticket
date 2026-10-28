@@ -23,7 +23,8 @@
 
   <div id="panel-body">
     <nav class="tabs" aria-label="Sections">
-      <button type="button" id="tab-explore" aria-pressed="true">Explore the map</button>
+      <button type="button" id="tab-plan" aria-pressed="false">Move my car</button>
+      <button type="button" id="tab-explore" aria-pressed="true">Explore</button>
       <button type="button" id="tab-game" aria-pressed="false">Daily game</button>
     </nav>
 
@@ -81,6 +82,29 @@
 
       <footer id="about"></footer>
     </div>
+
+    <section id="plan" hidden>
+      <h2>Move my car</h2>
+      <p class="hint">See how risky your spot is for the whole time you’re parked, and find safer blocks nearby.</p>
+      <div class="field">
+        <span class="field-name">Where’s your car?</span>
+        <p id="car-where" class="car-where">Tap the map where your car is parked.</p>
+        <button type="button" id="car-locate" class="secondary">Use my location</button>
+      </div>
+      <div class="field">
+        <span class="field-name">Parked until</span>
+        <div class="fc-when">
+          <label class="sr" for="until-d">Day</label><select id="until-d"></select>
+          <label class="sr" for="until-h">Time</label><select id="until-h"></select>
+        </div>
+        <div class="quick" role="group" aria-label="Quick picks">
+          <button type="button" data-q="morning">Tomorrow morning</button>
+          <button type="button" data-q="evening">Tomorrow evening</button>
+          <button type="button" data-q="monday">Monday morning</button>
+        </div>
+      </div>
+      <div id="plan-out" aria-live="polite"></div>
+    </section>
 
     <section id="game" hidden aria-live="polite"></section>
   </div>
