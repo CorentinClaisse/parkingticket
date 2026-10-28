@@ -344,6 +344,7 @@
     ring(selection.c);
     if (fly) map.flyTo({ center: selection.c, zoom: 17 });
     showSelection();
+    showAreaAgents(selection.c, selection.label);
     $("panel").classList.remove("collapsed");
   }
 
@@ -363,7 +364,6 @@
     </div>`;
     $("fc-d").onchange = (ev) => { FC.d = +ev.target.value; showSelection(); };
     $("fc-h").onchange = (ev) => { FC.h = +ev.target.value; showSelection(); };
-    el.querySelectorAll("[data-agent]").forEach((b) => (b.onclick = () => { $("agent").value = b.dataset.agent; loadAgent(b.dataset.agent); }));
   }
 
   function spotDetail(i) {
@@ -382,9 +382,6 @@
     const dayCells = wd.map((x, d) => `<span title="${DAY_NAMES[d]}: ${x} tickets" style="${shade(x, dm)}">${DAYS[d][0]}</span>`).join("");
     const topTypes = Object.entries(types).sort((a, b) => b[1] - a[1]).slice(0, 4)
       .map(([v, c]) => `<li><span>${esc(VLABEL[v] || "Code " + v)}</span><span>${num(c)}</span></li>`).join("");
-    const a = LOC.a[i] || [];
-    let agents = "";
-    for (let j = 0; j < a.length; j += 2) agents += `<li><button class="agent-btn" data-agent="${esc(a[j])}">${esc(a[j])}</button><span>${a[j + 1]} tickets here</span></li>`;
     return `<p class="strip-label">At this address: ${num(n)} tickets matching your filters, about ${(n / WEEKS).toFixed(1)} a week</p>
       <p class="strip-label">By hour</p>
       <div class="strip h24">${hourCells}</div>
@@ -392,7 +389,75 @@
       <p class="strip-label">By day</p>
       <div class="strip d7">${dayCells}</div>
       ${topTypes ? `<p class="strip-label">Most common</p><ul>${topTypes}</ul>` : ""}
-      ${agents ? `<p class="strip-label">Agents who work this spot (last ${META.route_days} days)</p><ul>${agents}</ul>` : ""}`;
+`;
+  }
+
+  // ---------------------------------------------------------------- agents in an area
+  const AGENT_CACHE = new Map();
+  function getAgent(id) {
+    if (!AGENT_CACHE.has(id)) {
+      AGENT_CACHE.set(id, fetch(`data/agents/${encodeURIComponent(id)}.json`).then((r) => {
+        if (!r.ok) throw new Error(id);
+        return r.json();
+      }).catch((e) => { AGENT_CACHE.delete(id); throw e; }));
+    }
+    return AGENT_CACHE.get(id);
+  }
+
+  // When an agent shows up within these spots: busiest 2-hour window and usual days
+  function habits(data, spots) {
+    const hours = new Array(24).fill(0), wd = new Array(7).fill(0), days = [];
+    let n = 0;
+    for (const [day, rows] of Object.entries(data.days)) {
+      let hit = false;
+      for (const [m, li] of rows) {
+        if (!spots.has(li)) continue;
+        hours[Math.floor(m / 60)]++; n++; hit = true;
+        wd[(new Date(day + "T12:00:00").getDay() + 6) % 7]++;
+      }
+      if (hit) days.push(day);
+    }
+    if (!n) return null;
+    let best = 0;
+    for (let h = 0; h < 23; h++) if (hours[h] + hours[h + 1] > hours[best] + hours[best + 1]) best = h;
+    const usual = wd.map((c, d) => [c, d]).filter(([c]) => c >= 0.15 * n).map(([, d]) => DAYS[d]);
+    days.sort();
+    return { n, from: best, to: best + 2, usual, days };
+  }
+
+  let areaToken = 0;
+  async function showAreaAgents(c, label) {
+    const box = $("area-agents"), token = ++areaToken;
+    let spots = near(c, 250), radius = "about 2 blocks";
+    const tally = (list) => {
+      const t = new Map();
+      for (const i of list) {
+        const a = LOC.a[i] || [];
+        for (let j = 0; j < a.length; j += 2) t.set(a[j], (t.get(a[j]) || 0) + a[j + 1]);
+      }
+      return t;
+    };
+    let t = tally(spots);
+    if (!t.size) { spots = near(c, 500); radius = "about 5 blocks"; t = tally(spots); }
+    if (!t.size) {
+      box.innerHTML = `<p class="hint">No agents wrote tickets near ${esc(label)} in the last ${META.route_days} days.</p>`;
+      return;
+    }
+    const top = [...t.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([id]) => id);
+    box.innerHTML = `<p class="hint">Finding who works near ${esc(label)}…</p>`;
+    const set = new Set(spots);
+    const found = await Promise.all(top.map((id) => getAgent(id).then((d) => ({ id, h: habits(d, set) })).catch(() => null)));
+    if (token !== areaToken) return;             // a newer selection replaced this one
+    const rows = found.filter((x) => x && x.h).sort((a, b) => b.h.n - a.h.n);
+    if (!rows.length) { box.innerHTML = `<p class="hint">Couldn’t load the agents for this area. Try again in a moment.</p>`; return; }
+    box.innerHTML = `<p class="hint">Agents who ticketed within ${radius} of ${esc(label)} in the last ${META.route_days} days. Tap one to replay their round.</p>
+      <ul class="agent-cards">${rows.map(({ id, h }) => `
+        <li><button type="button" class="agent-card" data-agent="${esc(id)}" aria-pressed="${agentData && agentData.id === id}">
+          <span class="ac-id">${esc(id)}</span>
+          <span class="ac-when">Usually ${fmtH(h.from)} to ${fmtH(h.to)}${h.usual.length ? ", " + h.usual.join(", ") : ""}</span>
+          <span class="ac-meta">${num(h.n)} tickets nearby, seen on ${h.days.length} day${h.days.length === 1 ? "" : "s"} (${fmtDate(h.days[0]).replace(/^\w+, /, "")} to ${fmtDate(h.days[h.days.length - 1]).replace(/^\w+, /, "")})</span>
+        </button></li>`).join("")}</ul>`;
+    box.querySelectorAll("[data-agent]").forEach((b) => (b.onclick = () => { $("agent").value = b.dataset.agent; loadAgent(b.dataset.agent); }));
   }
 
   // ---------------------------------------------------------------- agent rounds
@@ -401,11 +466,12 @@
     $("stops").innerHTML = ""; $("agent-info").innerHTML = "";
     if (!id) { $("day-field").hidden = true; map.getSource("route").setData(empty()); return; }
     try {
-      agentData = await fetch(`data/agents/${encodeURIComponent(id)}.json`).then((r) => r.json());
+      agentData = await getAgent(id);
     } catch (e) {
       $("agent-info").innerHTML = "<p>This agent’s round couldn’t be loaded. Reload the page and try again.</p>";
       return;
     }
+    document.querySelectorAll(".agent-card").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.agent === id)));
     const meta = AGENTS.find((a) => a.id === id);
     const dayList = Object.keys(agentData.days).sort().reverse();
     const sel = $("aday");

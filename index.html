@@ -58,12 +58,10 @@
 
       <section id="place" hidden aria-live="polite"></section>
 
-      <section class="rounds" aria-label="Agent rounds">
-        <h2>Agent rounds</h2>
-        <p class="hint">Each agent has a random ID that resets every month. Pick one to replay their route.</p>
-        <div class="field">
-          <label class="field-name" for="agent">Agent</label>
-          <select id="agent"><option value="">Choose an agent</option></select>
+      <section class="rounds" aria-label="Agents in this area">
+        <h2>Agents in this area</h2>
+        <div id="area-agents">
+          <p class="hint">Search an address or tap the map to see which agents work that area and when they usually come by.</p>
         </div>
         <div class="field" id="day-field" hidden>
           <label class="field-name" for="aday">Day</label>
@@ -71,6 +69,14 @@
         </div>
         <div id="agent-info"></div>
         <ol id="stops"></ol>
+        <details id="all-agents">
+          <summary>Browse all agents</summary>
+          <div class="field">
+            <label class="field-name sr" for="agent">Agent</label>
+            <select id="agent"><option value="">Choose an agent</option></select>
+          </div>
+        </details>
+        <p class="hint">Agent IDs are random and reset every month, so the same person can appear under a new ID each month.</p>
       </section>
 
       <footer id="about"></footer>

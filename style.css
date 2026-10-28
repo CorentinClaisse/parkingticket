@@ -203,3 +203,17 @@ footer a { color: inherit; }
 .contest { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--rule); }
 .contest p { margin: 4px 0; }
 .contest a { color: inherit; font-weight: 600; }
+
+/* Agents in this area */
+.agent-cards { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.agent-card {
+  width: 100%; display: grid; gap: 2px; text-align: left; padding: 8px 10px; cursor: pointer;
+  border: 2px solid var(--ink); border-radius: 8px; background: var(--plate);
+}
+.agent-card[aria-pressed="true"] { background: var(--curb); color: #1d2024; }
+.agent-card[aria-pressed="true"] .ac-meta { color: #3a3e44; }
+.ac-id { font-weight: 700; font-size: 1.1rem; }
+.ac-when { font-weight: 600; }
+.ac-meta { font-size: 0.9rem; color: var(--muted); }
+#all-agents { margin: 14px 0 6px; }
+#all-agents summary { cursor: pointer; font-weight: 600; }
