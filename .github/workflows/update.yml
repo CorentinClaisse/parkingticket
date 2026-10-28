@@ -45,7 +45,7 @@ jobs:
           git add cache/geocode_cache.json || true
           if ! git diff --cached --quiet; then
             git commit -m "Update address cache"
-            git push
+            git pull --rebase origin main && git push || echo "Cache not saved this time; it will be next run."
           fi
 
       - uses: actions/configure-pages@v5
