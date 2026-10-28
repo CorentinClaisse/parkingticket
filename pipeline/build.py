@@ -189,7 +189,7 @@ def agent_id(code, month):
 
 # ---------------------------------------------------------------- geocoding
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 
 def load_cache():
@@ -251,28 +251,36 @@ GEO_SESSION.headers["User-Agent"] = SESSION.headers["User-Agent"]
 
 
 def geocode_one(key):
-    """Returns (key, [lon, lat, label]) on a match, (key, 0) on a definite miss,
-    (key, None) on a temporary error (retried next run)."""
+    """Returns (key, value, reason, sample).
+    value is [lon, lat, label] on a match, 0 on a definite miss,
+    None on a temporary error (retried next run)."""
     b = CFG["bbox"]
     try:
-        r = GEO_SESSION.get(GEOSEARCH, params={"text": f"{key}, {CFG['borough_name']}, NY", "size": 1}, timeout=30)
+        r = GEO_SESSION.get(GEOSEARCH, params={"text": f"{key}, {CFG['borough_name']}, NY", "size": 5}, timeout=30)
         if r.status_code != 200:
-            return key, None
+            return key, None, f"http {r.status_code}", r.text[:200]
         feats = r.json().get("features") or []
         if not feats:
-            return key, 0
-        f = feats[0]
-        p = f.get("properties", {})
-        lon, lat = f["geometry"]["coordinates"][:2]
-        if not good_match(key, p):
-            return key, 0
-        if (p.get("borough") or CFG["borough_name"]).lower() != CFG["borough_name"].lower():
-            return key, 0
-        if not (b[0] <= lon <= b[2] and b[1] <= lat <= b[3]):
-            return key, 0
-        return key, [round(lon, 5), round(lat, 5), (p.get("name") or key).upper()]
-    except Exception:
-        return key, None
+            return key, 0, "no results", ""
+        reason = "no result matched"
+        for f in feats:
+            p = f.get("properties", {})
+            lon, lat = f["geometry"]["coordinates"][:2]
+            if (p.get("borough") or CFG["borough_name"]).lower() != CFG["borough_name"].lower():
+                reason = "other borough"
+                continue
+            if not (b[0] <= lon <= b[2] and b[1] <= lat <= b[3]):
+                reason = "outside map area"
+                continue
+            if not good_match(key, p):
+                reason = "different address"
+                continue
+            return key, [round(lon, 5), round(lat, 5), (p.get("name") or key).upper()], "found", ""
+        sample = json.dumps({k: feats[0].get("properties", {}).get(k) for k in
+                             ("name", "label", "housenumber", "house_number", "street", "borough", "layer", "match_type")})
+        return key, 0, reason, sample
+    except Exception as e:
+        return key, None, f"error {type(e).__name__}", str(e)[:200]
 
 
 def geocode_all(keys_by_priority, cache):
@@ -280,17 +288,35 @@ def geocode_all(keys_by_priority, cache):
     log(f"Addresses: {len(keys_by_priority):,} total, {len(todo):,} new to locate this run")
     deadline = time.time() + CFG["geocode_minutes"] * 60
     done = 0
+    outcomes = Counter()
+    samples = {}
+    new_misses = []
     with ThreadPoolExecutor(CFG["geocode_threads"]) as ex:
         for i in range(0, len(todo), 1000):
             if time.time() > deadline:
                 log("Geocoding time budget reached; the rest continues next run.")
                 break
-            for key, val in ex.map(geocode_one, todo[i:i + 1000]):
+            for key, val, reason, sample in ex.map(geocode_one, todo[i:i + 1000]):
+                outcomes[reason] += 1
+                if reason != "found" and len(samples.get(reason, [])) < 3:
+                    samples.setdefault(reason, []).append(f"{key} -> {sample}")
                 if val is not None:
                     cache[key] = val
+                if val == 0:
+                    new_misses.append(key)
             done += len(todo[i:i + 1000])
             save_cache(cache)
-            log(f"  located {done:,}/{len(todo):,}")
+            log(f"  looked up {done:,}/{len(todo):,}: " + ", ".join(f"{n:,} {r}" for r, n in outcomes.most_common()))
+            if done >= 2000 and outcomes["found"] == 0:
+                log("Stopping lookups early: nothing is matching, so something is wrong. Examples below.")
+                for k in new_misses:      # don't remember these misses; retry after a fix
+                    cache.pop(k, None)
+                save_cache(cache)
+                break
+    for reason, ex_list in samples.items():
+        log(f"Examples of '{reason}':")
+        for x in ex_list:
+            log("    " + x)
 
 
 # ---------------------------------------------------------------- main
