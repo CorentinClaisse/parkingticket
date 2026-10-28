@@ -1,5 +1,5 @@
 /* Brooklyn parking ticket map. Everything runs in the browser on pre-built
-   JSON files, so a search costs nothing. */
+   JSON files, so searches, forecasts and the game cost nothing to serve. */
 (() => {
   "use strict";
 
@@ -7,19 +7,34 @@
   const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   const STYLE = "https://tiles.openfreemap.org/styles/positron";
   const GEOSEARCH = "https://geosearch.planninglabs.nyc/v2/autocomplete";
+  const RADIUS = 75;                       // metres: "within a block"
+  const GAME_EPOCH = Date.UTC(2026, 9, 28); // puzzle #1
+  const STORE = "ticketGuess.v1";
 
   const S = { days: [true, true, true, true, true, true, true], h0: 0, h1: 23, v: "all" };
-  let META, LOC, AGENTS, VLABEL = {}, COUNTS, map, selected = null, agentData = null;
+  let META, LOC, AGENTS, P = {}, VLABEL = {}, COUNTS, WEEKS, map, agentData = null;
+  let selection = null;                    // {i, c, label}
+  const FC = nyNow();                      // forecast day/hour, defaults to now
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const fmtH = (h) => (h % 12 === 0 ? 12 : h % 12) + (h < 12 ? "am" : "pm");
+  const fmtH = (h) => { h = ((h % 24) + 24) % 24; return (h % 12 === 0 ? 12 : h % 12) + (h < 12 ? "am" : "pm"); };
   const fmtM = (m) => {
     const h = Math.floor(m / 60), mm = String(m % 60).padStart(2, "0");
     return (h % 12 === 0 ? 12 : h % 12) + ":" + mm + (h < 12 ? "am" : "pm");
   };
   const fmtDate = (iso) => new Date(iso + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
   const num = (n) => n.toLocaleString("en-US");
+
+  function nyNow() {
+    try {
+      const p = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", hourCycle: "h23" }).formatToParts(new Date());
+      return { d: Math.max(0, DAYS.indexOf(p.find((x) => x.type === "weekday").value)), h: (+p.find((x) => x.type === "hour").value) % 24 };
+    } catch (e) {
+      const n = new Date();
+      return { d: (n.getDay() + 6) % 7, h: n.getHours() };
+    }
+  }
 
   // ---------------------------------------------------------------- data
   async function load() {
@@ -30,17 +45,18 @@
       $("loading").textContent = "The map data hasn't been built yet. Run the “Update map” workflow on GitHub, then reload.";
       return;
     }
+    P = await get("partners.json").catch(() => ({}));
+    WEEKS = Math.max(1, META.window_days / 7);
     META.violations.forEach((v) => (VLABEL[v.c] = v.l));
+    buildGrid();
     buildControls();
     initMap();
   }
 
   // Each location has a flat list [key, count, key, count...]
   // where key = (weekday*24 + hour) * 100 + violation code.
-  function matches(k) {
-    const v = k % 100, how = (k - v) / 100, d = (how / 24) | 0, h = how % 24;
-    return S.days[d] && h >= S.h0 && h <= S.h1 && (S.v === "all" || v === S.v);
-  }
+  const split = (k) => { const v = k % 100, how = (k - v) / 100; return [(how / 24) | 0, how % 24, v, how]; };
+  const typeOk = (v) => S.v === "all" || v === S.v;
 
   function computeCounts() {
     const N = LOC.p.length, out = new Int32Array(N);
@@ -48,7 +64,10 @@
     for (let i = 0; i < N; i++) {
       const e = LOC.e[i];
       let s = 0;
-      for (let j = 0; j < e.length; j += 2) if (matches(e[j])) s += e[j + 1];
+      for (let j = 0; j < e.length; j += 2) {
+        const [d, h, v] = split(e[j]);
+        if (S.days[d] && h >= S.h0 && h <= S.h1 && typeOk(v)) s += e[j + 1];
+      }
       out[i] = s;
       total += s;
     }
@@ -64,6 +83,127 @@
     return { type: "FeatureCollection", features: f };
   }
 
+  // ---------------------------------------------------------------- spatial lookups
+  const CELL = 0.001;
+  let GRID;
+  const cellKey = (x, y) => Math.floor(x / CELL) + ":" + Math.floor(y / CELL);
+  function buildGrid() {
+    GRID = new Map();
+    LOC.p.forEach(([x, y], i) => {
+      const k = cellKey(x, y);
+      if (!GRID.has(k)) GRID.set(k, []);
+      GRID.get(k).push(i);
+    });
+  }
+  // Ticketed spots within r metres of a point
+  function near([lon, lat], r = RADIUS) {
+    const out = [], kx = Math.cos(lat * Math.PI / 180) * 111320, ky = 110540;
+    const cx = Math.floor(lon / CELL), cy = Math.floor(lat / CELL), reach = Math.ceil(r / 80);
+    for (let dx = -reach; dx <= reach; dx++) for (let dy = -reach; dy <= reach; dy++) {
+      const a = GRID.get((cx + dx) + ":" + (cy + dy));
+      if (!a) continue;
+      for (const i of a) {
+        const ddx = (LOC.p[i][0] - lon) * kx, ddy = (LOC.p[i][1] - lat) * ky;
+        if (ddx * ddx + ddy * ddy <= r * r) out.push(i);
+      }
+    }
+    return out;
+  }
+  function nearest(c, r = 80) {
+    let best = null, bd = Infinity;
+    const kx = Math.cos(c[1] * Math.PI / 180) * 111320, ky = 110540;
+    for (const i of near(c, r)) {
+      const dx = (LOC.p[i][0] - c[0]) * kx, dy = (LOC.p[i][1] - c[1]) * ky, d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+  // Tickets per hour of the week (168 slots) across a set of spots
+  function weekly(idxs, filterType) {
+    const out = new Float64Array(168);
+    for (const i of idxs) {
+      const e = LOC.e[i];
+      for (let j = 0; j < e.length; j += 2) {
+        const [, , v, how] = split(e[j]);
+        if (!filterType || typeOk(v)) out[how] += e[j + 1];
+      }
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------- forecast
+  // Tickets in a given hour, averaged per week, treated as a Poisson rate:
+  // chance of at least one ticket = 1 - e^(-rate).
+  const chance = (count) => 1 - Math.exp(-count / WEEKS);
+  function level(p) {
+    if (p < 0.1) return { name: "Low", cls: "low" };
+    if (p < 0.35) return { name: "Medium", cls: "med" };
+    return { name: "High", cls: "high" };
+  }
+  const pct = (p) => (p < 0.01 && p > 0 ? "<1" : Math.round(p * 100)) + "%";
+
+  function forecastHTML(c) {
+    const w = weekly(near(c), true);
+    const slot = FC.d * 24 + FC.h, p = chance(w[slot]), lv = level(p);
+    const dayOpts = DAY_NAMES.map((d, i) => `<option value="${i}"${i === FC.d ? " selected" : ""}>${d}</option>`).join("");
+    const hourOpts = Array.from({ length: 24 }, (_, h) => `<option value="${h}"${h === FC.h ? " selected" : ""}>${fmtH(h)} to ${fmtH(h + 1)}</option>`).join("");
+    const next = Array.from({ length: 6 }, (_, k) => {
+      const s = (slot + k) % 168, q = chance(w[s]);
+      return `<span class="${level(q).cls}" title="${DAY_NAMES[(s / 24) | 0]} ${fmtH(s % 24)}"><b>${fmtH(s % 24)}</b>${pct(q)}</span>`;
+    }).join("");
+    const what = S.v === "all" ? "a ticket" : `a ${esc((VLABEL[S.v] || "Code " + S.v).toLowerCase())} ticket`;
+    return `<div class="forecast">
+      <div class="fc-when">
+        <label class="sr" for="fc-d">Day</label><select id="fc-d">${dayOpts}</select>
+        <label class="sr" for="fc-h">Hour</label><select id="fc-h">${hourOpts}</select>
+      </div>
+      <div class="fc-big ${lv.cls}">${pct(p)}<span>${lv.name} risk</span></div>
+      <p class="fc-note">Chance an agent writes ${what} within about a block of here in this hour, based on the last ${Math.round(WEEKS)} weeks.</p>
+      <div class="fc-next">${next}</div>
+      ${p >= ((P.garage && P.garage.min_risk) || 0.35) ? garageHTML(c) : ""}
+    </div>`;
+  }
+
+  // ---------------------------------------------------------------- referrals
+  // Next time the chosen forecast hour comes around, as local NYC time
+  function nextSlot() {
+    const now = nyNow();
+    let ahead = (FC.d - now.d + 7) % 7;
+    if (ahead === 0 && FC.h < now.h) ahead = 7;
+    const start = Date.parse(nyDate() + "T00:00:00Z") + ahead * 864e5 + FC.h * 36e5;
+    const iso = (t) => new Date(t).toISOString().slice(0, 16);
+    return { start: iso(start), end: iso(start + 2 * 36e5) };
+  }
+  const hasSponsor = () => !!((P.garage && P.garage.enabled && P.garage.url) || (P.contest && (P.contest.partners || []).length));
+
+  function garageHTML(c) {
+    const g = P.garage || {}, when = nextSlot();
+    const fill = (u) => u.replace(/\{lat\}/g, c[1].toFixed(5)).replace(/\{lon\}/g, c[0].toFixed(5))
+      .replace(/\{address\}/g, encodeURIComponent(selection ? selection.label : ""))
+      .replace(/\{start\}/g, encodeURIComponent(when.start)).replace(/\{end\}/g, encodeURIComponent(when.end));
+    const sponsored = !!(g.enabled && g.url);
+    const href = sponsored ? fill(g.url) : `https://www.google.com/maps/search/parking+garage/@${c[1].toFixed(5)},${c[0].toFixed(5)},17z`;
+    const label = sponsored ? `Book a garage nearby on ${esc(g.name || "our partner")}` : "Find a garage nearby";
+    return `<div class="garage">
+      <p>Parking on the street here is a gamble at this hour. A garage might cost less than a ticket.</p>
+      <a class="cta" href="${esc(href)}" target="_blank" rel="${sponsored ? "sponsored " : ""}noopener">${label}</a>
+      ${sponsored ? `<p class="fine">Partner link: we may earn a commission.</p>` : ""}
+    </div>`;
+  }
+
+  function contestHTML() {
+    const ct = P.contest || {};
+    const free = ct.free_url || "https://www.nyc.gov/site/finance/vehicles/dispute-a-ticket.page";
+    const partners = (ct.partners || []).filter((x) => x && x.name && x.url).map((x) =>
+      `<a href="${esc(x.url)}" target="_blank" rel="sponsored noopener">${esc(x.name)}</a>${x.blurb ? ` (${esc(x.blurb)})` : ""}`).join(", ");
+    return `<div class="contest">
+      <p class="strip-label">Already got a ticket?</p>
+      <p>You can contest it for free with the city <a href="${esc(free)}" target="_blank" rel="noopener">online or in the NYC Pay or Dispute app</a>.</p>
+      ${partners ? `<p>Or let a service fight it for you: ${partners}. <span class="fine">Partner links: we may earn a commission.</span></p>` : ""}
+    </div>`;
+  }
+
+  // ---------------------------------------------------------------- filters
   let pending = 0;
   function refresh() {
     cancelAnimationFrame(pending);
@@ -72,14 +212,13 @@
       const src = map && map.getSource("tix");
       if (src) src.setData(geojson());
       const days = S.days.every(Boolean) ? "every day" : DAYS.filter((_, i) => S.days[i]).join(", ") || "no days";
-      const hrs = S.h0 === 0 && S.h1 === 23 ? "all day" : `${fmtH(S.h0)} to ${fmtH((S.h1 + 1) % 24)}`;
+      const hrs = S.h0 === 0 && S.h1 === 23 ? "all day" : `${fmtH(S.h0)} to ${fmtH(S.h1 + 1)}`;
       $("total").textContent = `${num(total)} tickets, ${days}, ${hrs}`;
       $("hours-out").textContent = hrs;
-      if (selected !== null) showPlace(selected);
+      if (selection) showSelection();
     });
   }
 
-  // ---------------------------------------------------------------- controls
   function buildControls() {
     const days = $("days");
     DAYS.forEach((d, i) => {
@@ -119,13 +258,16 @@
       $("collapse").textContent = c ? "Show" : "Hide";
       $("collapse").setAttribute("aria-expanded", String(!c));
     };
+    $("tab-explore").onclick = () => setTab("explore");
+    $("tab-game").onclick = () => setTab("game");
 
     $("about").innerHTML =
       `<p>${num(META.mapped)} of ${num(META.tickets)} tickets written by agents in ${esc(META.borough)} between ${fmtDate(META.from)} and ${fmtDate(META.to)}. ` +
       `Rounds cover the last ${META.route_days} days of that. Updated ${fmtDate(META.built)}.</p>` +
       `<p>Source: <a href="https://data.cityofnewyork.us/browse?q=parking%20violations%20issued" target="_blank" rel="noopener">NYC Open Data</a>. ` +
       `No plates or personal details are shown. Agent IDs are random, reset monthly, and the newest ${META.delay_days} days are held back. ` +
-      `Past patterns don’t guarantee anything: always read the signs.</p>`;
+      `Forecasts describe past patterns, not guarantees: always read the signs.</p>` +
+      (hasSponsor() ? `<p>${esc(P.disclosure || "Some links on this site may earn a commission.")}</p>` : "");
 
     setupSearch();
   }
@@ -171,7 +313,12 @@
         layout: { "text-field": ["get", "label"], "text-size": 11, "text-font": ["Noto Sans Regular"], "text-allow-overlap": true },
         paint: { "text-color": "#1d2024" } });
 
-      map.on("click", "dots", (e) => selectPlace(e.features[0].properties.i));
+      map.on("click", (e) => {
+        if (tab !== "explore") return;
+        const hit = map.queryRenderedFeatures(e.point, { layers: ["dots"] });
+        if (hit.length) selectSpot(hit[0].properties.i);
+        else selectPoint([e.lngLat.lng, e.lngLat.lat], "Spot you picked");
+      });
       map.on("mouseenter", "dots", () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", "dots", () => (map.getCanvas().style.cursor = ""));
       $("loading").hidden = true;
@@ -180,31 +327,57 @@
   }
 
   const empty = () => ({ type: "FeatureCollection", features: [] });
+  function ring(c) { map.getSource("pick").setData(c ? { type: "Feature", geometry: { type: "Point", coordinates: c } } : empty()); }
 
-  // ---------------------------------------------------------------- a selected spot
-  function selectPlace(i, fly) {
-    selected = i;
-    map.getSource("pick").setData({ type: "Feature", geometry: { type: "Point", coordinates: LOC.p[i] } });
-    if (fly) map.flyTo({ center: LOC.p[i], zoom: 17 });
-    showPlace(i);
+  // ---------------------------------------------------------------- selection
+  function selectSpot(i, fly) {
+    selection = { i, c: LOC.p[i], label: LOC.l[i] };
+    afterSelect(fly);
+  }
+  function selectPoint(c, label, fly) {
+    const i = nearest(c, 30);
+    if (i !== null) return selectSpot(i, fly);
+    selection = { i: null, c, label };
+    afterSelect(fly);
+  }
+  function afterSelect(fly) {
+    ring(selection.c);
+    if (fly) map.flyTo({ center: selection.c, zoom: 17 });
+    showSelection();
     $("panel").classList.remove("collapsed");
   }
 
-  function showPlace(i) {
+  function showSelection() {
+    const { i, c, label } = selection;
+    const el = $("place");
+    el.hidden = false;
+    let detail = "";
+    if (i !== null) detail = spotDetail(i);
+    else detail = `<p class="sub">No tickets recorded at this exact address. The forecast covers the surrounding block.</p>`;
+    el.innerHTML = `<div class="plate">
+      <h3>${esc(label)}</h3>
+      ${i !== null ? `<p class="sub">Precinct ${esc(LOC.pr[i] || "unknown")}</p>` : ""}
+      ${forecastHTML(c)}
+      ${detail}
+      ${contestHTML()}
+    </div>`;
+    $("fc-d").onchange = (ev) => { FC.d = +ev.target.value; showSelection(); };
+    $("fc-h").onchange = (ev) => { FC.h = +ev.target.value; showSelection(); };
+    el.querySelectorAll("[data-agent]").forEach((b) => (b.onclick = () => { $("agent").value = b.dataset.agent; loadAgent(b.dataset.agent); }));
+  }
+
+  function spotDetail(i) {
     const e = LOC.e[i], hours = new Array(24).fill(0), wd = new Array(7).fill(0), types = {};
     let n = 0;
     for (let j = 0; j < e.length; j += 2) {
-      const k = e[j], c = e[j + 1], v = k % 100, how = (k - v) / 100, d = (how / 24) | 0, h = how % 24;
-      const typeOk = S.v === "all" || v === S.v;
-      if (typeOk && S.days[d]) hours[h] += c;
-      if (typeOk && h >= S.h0 && h <= S.h1) wd[d] += c;
+      const [d, h, v] = split(e[j]), c = e[j + 1];
+      if (typeOk(v) && S.days[d]) hours[h] += c;
+      if (typeOk(v) && h >= S.h0 && h <= S.h1) wd[d] += c;
       if (S.days[d] && h >= S.h0 && h <= S.h1) types[v] = (types[v] || 0) + c;
-      if (matches(k)) n += c;
+      if (S.days[d] && h >= S.h0 && h <= S.h1 && typeOk(v)) n += c;
     }
-    const weeks = Math.max(1, Math.round(META.window_days / 7));
     const hm = Math.max(1, ...hours), dm = Math.max(1, ...wd);
     const shade = (x, m) => (x === 0 ? "" : `background: color-mix(in srgb, var(--red) ${Math.round(25 + 75 * x / m)}%, var(--plate))`);
-
     const hourCells = hours.map((x, h) => `<span title="${fmtH(h)}: ${x} tickets" style="${shade(x, hm)}"></span>`).join("");
     const dayCells = wd.map((x, d) => `<span title="${DAY_NAMES[d]}: ${x} tickets" style="${shade(x, dm)}">${DAYS[d][0]}</span>`).join("");
     const topTypes = Object.entries(types).sort((a, b) => b[1] - a[1]).slice(0, 4)
@@ -212,23 +385,14 @@
     const a = LOC.a[i] || [];
     let agents = "";
     for (let j = 0; j < a.length; j += 2) agents += `<li><button class="agent-btn" data-agent="${esc(a[j])}">${esc(a[j])}</button><span>${a[j + 1]} tickets here</span></li>`;
-
-    const el = $("place");
-    el.hidden = false;
-    el.innerHTML = `<div class="plate">
-      <h3>${esc(LOC.l[i])}</h3>
-      <p class="sub">Precinct ${esc(LOC.pr[i] || "unknown")}</p>
-      <div class="big">${num(n)}</div>
-      <p class="big-label">tickets matching your filters in ${weeks} weeks, about ${(n / weeks).toFixed(1)} a week</p>
+    return `<p class="strip-label">At this address: ${num(n)} tickets matching your filters, about ${(n / WEEKS).toFixed(1)} a week</p>
       <p class="strip-label">By hour</p>
       <div class="strip h24">${hourCells}</div>
       <div class="axis"><span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>11pm</span></div>
       <p class="strip-label">By day</p>
       <div class="strip d7">${dayCells}</div>
       ${topTypes ? `<p class="strip-label">Most common</p><ul>${topTypes}</ul>` : ""}
-      ${agents ? `<p class="strip-label">Agents who work this spot (last ${META.route_days} days)</p><ul>${agents}</ul>` : ""}
-    </div>`;
-    el.querySelectorAll("[data-agent]").forEach((b) => (b.onclick = () => { $("agent").value = b.dataset.agent; loadAgent(b.dataset.agent); }));
+      ${agents ? `<p class="strip-label">Agents who work this spot (last ${META.route_days} days)</p><ul>${agents}</ul>` : ""}`;
   }
 
   // ---------------------------------------------------------------- agent rounds
@@ -251,7 +415,7 @@
     $("day-field").hidden = false;
     if (meta) {
       const usual = meta.wd.map((c, i) => [c, i]).filter(([c]) => c >= 0.08 * meta.n).map(([, i]) => DAYS[i]).join(", ");
-      $("agent-info").innerHTML = `<p>Usually works ${fmtH(meta.h[0])} to ${fmtH((meta.h[1] + 1) % 24)}, mostly ${usual || "varies"}.</p>`;
+      $("agent-info").innerHTML = `<p>Usually works ${fmtH(meta.h[0])} to ${fmtH(meta.h[1] + 1)}, mostly ${usual || "varies"}.</p>`;
     }
     drawRound();
   }
@@ -275,7 +439,7 @@
     src.setData({ type: "FeatureCollection", features: feats });
     list.innerHTML = rows.map(([m, li, v]) =>
       `<li data-i="${li}"><span class="t">${fmtM(m)}</span><span>${esc(LOC.l[li])}<br><span class="w">${esc(VLABEL[v] || "Code " + v)}</span></span></li>`).join("");
-    list.querySelectorAll("li").forEach((li) => (li.onclick = () => selectPlace(+li.dataset.i, true)));
+    list.querySelectorAll("li").forEach((li) => (li.onclick = () => selectSpot(+li.dataset.i, true)));
     fit(coords);
   }
 
@@ -296,12 +460,7 @@
       out.hidden = !items.length;
       out.querySelectorAll("li").forEach((li) => (li.onmousedown = (ev) => { ev.preventDefault(); choose(items[+li.dataset.k]); }));
     };
-    const choose = (it) => {
-      close(); q.value = it.label;
-      const i = nearest(it.c);
-      if (i !== null) selectPlace(i, true);
-      else map.flyTo({ center: it.c, zoom: 17 });
-    };
+    const choose = (it) => { close(); q.value = it.label; selectPoint(it.c, it.label.replace(/,.*$/, ""), true); };
     q.oninput = () => {
       clearTimeout(timer);
       const text = q.value.trim();
@@ -326,15 +485,166 @@
     q.onblur = () => setTimeout(close, 150);
   }
 
-  // Closest ticketed spot within ~80 m of a searched address
-  function nearest([lon, lat]) {
-    let best = null, bd = Infinity;
-    const kx = Math.cos(lat * Math.PI / 180);
-    for (let i = 0; i < LOC.p.length; i++) {
-      const dx = (LOC.p[i][0] - lon) * kx, dy = LOC.p[i][1] - lat, d = dx * dx + dy * dy;
-      if (d < bd) { bd = d; best = i; }
+  // ---------------------------------------------------------------- tabs
+  let tab = "explore";
+  function setTab(t) {
+    tab = t;
+    $("tab-explore").setAttribute("aria-pressed", String(t === "explore"));
+    $("tab-game").setAttribute("aria-pressed", String(t === "game"));
+    $("explore").hidden = t !== "explore";
+    $("game").hidden = t !== "game";
+    // Hide the heat map during the game so it doesn't give answers away
+    ["heat", "dots", "route-line", "route-stops", "route-num"].forEach((id) => {
+      if (map && map.getLayer(id)) map.setLayoutProperty(id, "visibility", t === "game" ? "none" : "visible");
+    });
+    if (t === "game") startGame();
+    else ring(selection ? selection.c : null);
+    $("panel").classList.remove("collapsed");
+  }
+
+  // ---------------------------------------------------------------- daily game
+  function nyDate() {
+    try { return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date()); }
+    catch (e) { return new Date().toISOString().slice(0, 10); }
+  }
+  const puzzleNo = () => Math.max(1, Math.floor((Date.parse(nyDate() + "T00:00:00Z") - GAME_EPOCH) / 864e5) + 1);
+
+  function rng(seed) {   // mulberry32: same seed, same puzzle for everyone
+    return () => {
+      seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function countNear(i, test) {
+    const w = weekly(near(LOC.p[i]), false);
+    let c = 0;
+    for (let s = 0; s < 168; s++) if (test((s / 24) | 0, s % 24)) c += w[s];
+    return Math.round(c);
+  }
+
+  function options(c, r) {
+    const mult = [0.25, 0.4, 0.6, 1.6, 2.2, 3.2];
+    for (let k = mult.length - 1; k > 0; k--) { const j = Math.floor(r() * (k + 1)); [mult[k], mult[j]] = [mult[j], mult[k]]; }
+    const set = [c];
+    for (const m of mult) {
+      const v = Math.max(1, Math.round(c * m));
+      if (set.every((x) => Math.abs(x - v) >= Math.max(2, 0.18 * Math.max(x, v)))) set.push(v);
+      if (set.length === 4) break;
     }
-    return Math.sqrt(bd) * 111000 < 80 ? best : null;
+    return set.sort((a, b) => a - b);
+  }
+
+  function makeRounds(no) {
+    const r = rng(no * 9973 + 17), pool = [];
+    for (let i = 0; i < LOC.p.length; i++) {
+      let t = 0;
+      for (let j = 1; j < LOC.e[i].length; j += 2) t += LOC.e[i][j];
+      if (t >= 15) pool.push(i);
+    }
+    const rounds = [];
+    for (let guard = 0; rounds.length < 5 && guard < 600 && pool.length; guard++) {
+      const i = pool[Math.floor(r() * pool.length)];
+      if (rounds.some((x) => x.i === i)) continue;
+      let q, c;
+      if (r() < 0.5) {
+        const d = Math.floor(r() * 7);
+        c = countNear(i, (dw) => dw === d);
+        q = `on ${DAY_NAMES[d]}s`;
+      } else {
+        const h0 = 6 + Math.floor(r() * 13);
+        c = countNear(i, (dw, h) => h >= h0 && h < h0 + 2);
+        q = `between ${fmtH(h0)} and ${fmtH(h0 + 2)}, any day`;
+      }
+      if (c < 8) continue;
+      rounds.push({ i, q, c, opts: options(c, r) });
+    }
+    return rounds;
+  }
+
+  function loadStats() {
+    try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; }
+  }
+  function saveStats(s) { try { localStorage.setItem(STORE, JSON.stringify(s)); } catch (e) { /* private mode */ } }
+
+  let G = null;
+  function startGame() {
+    const no = puzzleNo();
+    if (!G || G.no !== no) {
+      const st = loadStats();
+      G = { no, rounds: makeRounds(no), answers: st.no === no && Array.isArray(st.answers) ? st.answers : [], picked: null };
+    }
+    renderGame();
+  }
+
+  function renderGame() {
+    const el = $("game"), weeks = Math.round(WEEKS);
+    if (G.rounds.length < 5) {
+      el.innerHTML = `<h2>Ticket guess</h2><p class="hint">There isn’t enough data for today’s game yet. Check back after the next update.</p>`;
+      return;
+    }
+    if (G.answers.length >= 5 && G.picked === null) return renderResults();
+    const k = G.picked === null ? G.answers.length : G.answers.length - 1;
+    const R = G.rounds[k];
+    ring(LOC.p[R.i]);
+    map.flyTo({ center: LOC.p[R.i], zoom: 16 });
+    const buttons = R.opts.map((v) => {
+      let cls = "";
+      if (G.picked !== null) cls = v === R.c ? "right" : v === G.picked ? "wrong" : "";
+      return `<button type="button" class="opt ${cls}" data-v="${v}" ${G.picked !== null ? "disabled" : ""}>${num(v)}</button>`;
+    }).join("");
+    const verdict = G.picked === null ? "" :
+      `<p class="verdict">${G.picked === R.c ? "Correct" : "Not quite"}: agents wrote ${num(R.c)} tickets here.</p>
+       <button type="button" id="next" class="primary">${k === 4 ? "See your score" : "Next spot"}</button>`;
+    el.innerHTML = `<h2>Ticket guess #${G.no}</h2>
+      <p class="progress">Spot ${k + 1} of 5 ${G.answers.map((a) => (a ? "🟩" : "🟥")).join("")}</p>
+      <div class="plate">
+        <h3>${esc(LOC.l[R.i])}</h3>
+        <p class="q">How many tickets did agents write within a block of here ${esc(R.q)}, over the last ${weeks} weeks?</p>
+        <div class="opts">${buttons}</div>
+        ${verdict}
+      </div>`;
+    el.querySelectorAll(".opt").forEach((b) => (b.onclick = () => answer(+b.dataset.v)));
+    if ($("next")) $("next").onclick = () => { G.picked = null; renderGame(); };
+  }
+
+  function answer(v) {
+    const R = G.rounds[G.answers.length];
+    G.picked = v;
+    G.answers.push(v === R.c);
+    const st = loadStats();
+    st.no = G.no; st.answers = G.answers;
+    if (G.answers.length === 5 && st.lastDone !== G.no) {
+      st.streak = st.lastDone === G.no - 1 ? (st.streak || 0) + 1 : 1;
+      st.best = Math.max(st.best || 0, st.streak);
+      st.played = (st.played || 0) + 1;
+      st.lastDone = G.no;
+    }
+    saveStats(st);
+    renderGame();
+  }
+
+  function renderResults() {
+    const st = loadStats(), score = G.answers.filter(Boolean).length;
+    const grid = G.answers.map((a) => (a ? "🟩" : "🟥")).join("");
+    const text = `Brooklyn Ticket Guess #${G.no}: ${score}/5\n${grid}\n${location.origin}${location.pathname}`;
+    ring(null);
+    $("game").innerHTML = `<h2>Ticket guess #${G.no}</h2>
+      <div class="plate result">
+        <div class="score">${score}/5</div>
+        <p class="grid">${grid}</p>
+        <p>Streak: ${st.streak || 1} day${(st.streak || 1) === 1 ? "" : "s"}. Best: ${st.best || 1}. Games played: ${st.played || 1}.</p>
+        <button type="button" id="share" class="primary">Share result</button>
+        <p class="hint">A new set of spots arrives tomorrow.</p>
+      </div>`;
+    $("share").onclick = async () => {
+      try {
+        if (navigator.share) await navigator.share({ text });
+        else { await navigator.clipboard.writeText(text); $("share").textContent = "Copied to clipboard"; }
+      } catch (e) { /* share sheet closed */ }
+    };
   }
 
   load();

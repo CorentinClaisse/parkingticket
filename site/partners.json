@@ -1,0 +1,13 @@
+{
+  "disclosure": "Some links on this site may earn a commission if you book. It never changes the forecasts.",
+  "garage": {
+    "enabled": false,
+    "name": "SpotHero",
+    "url": "",
+    "min_risk": 0.35
+  },
+  "contest": {
+    "free_url": "https://www.nyc.gov/site/finance/vehicles/dispute-a-ticket.page",
+    "partners": []
+  }
+}
