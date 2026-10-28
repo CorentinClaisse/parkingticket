@@ -1,0 +1,58 @@
+name: Update map
+
+on:
+  schedule:
+    - cron: "0 10 * * *"   # every day, 6am New York time
+  workflow_dispatch:        # adds a "Run workflow" button
+
+permissions:
+  contents: write           # to save the address cache
+  pages: write
+  id-token: write
+
+concurrency:
+  group: update-map
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Build data
+        env:
+          AGENT_ID_SALT: ${{ secrets.AGENT_ID_SALT }}
+          SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
+        run: python pipeline/build.py
+
+      - name: Save address cache
+        if: always()
+        run: |
+          git config user.name "map-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add cache/geocode_cache.json || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Update address cache"
+            git push
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
