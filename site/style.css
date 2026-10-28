@@ -1,0 +1,143 @@
+:root {
+  --page: #eef0ec;
+  --plate: #ffffff;
+  --ink: #1d2024;
+  --muted: #5b6168;
+  --rule: #c9cdc6;
+  --red: #c4122f;
+  --green: #00744a;
+  --curb: #f2c230;
+  --focus: #1a5fd6;
+  color-scheme: light;
+  font-family: "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.35;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #17191c;
+    --plate: #23262b;
+    --ink: #ecedea;
+    --muted: #a3a8ae;
+    --rule: #3a3e44;
+    --red: #ff5a6e;
+    --green: #3cc48a;
+    --focus: #7fb0ff;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--page); color: var(--ink); overflow: hidden; }
+#map { position: absolute; inset: 0; }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+/* Panel: a side column on desktop, a bottom sheet on phones */
+#panel {
+  position: absolute; z-index: 2;
+  top: calc(12px + env(safe-area-inset-top, 0px)); left: 12px; bottom: 12px;
+  width: 372px; max-width: calc(100% - 24px);
+  display: flex; flex-direction: column;
+  background: var(--page); border: 2px solid var(--ink); border-radius: 12px;
+  overflow: hidden;
+}
+#panel-body { overflow-y: auto; padding: 0 16px 16px; flex: 1; }
+@media (max-width: 640px) {
+  #panel {
+    top: auto; left: 0; right: 0; bottom: 0; width: 100%; max-width: none;
+    max-height: 58vh; border-width: 2px 0 0; border-radius: 14px 14px 0 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  #panel.collapsed #panel-body { display: none; }
+}
+
+.masthead {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; background: var(--red); color: #fff;
+}
+.masthead h1 { margin: 0; font-size: 1.5rem; font-weight: 700; letter-spacing: -0.01em; }
+button, select, input { font: inherit; color: inherit; }
+.ghost { background: transparent; border: 2px solid currentColor; border-radius: 6px; padding: 2px 10px; color: #fff; cursor: pointer; }
+@media (min-width: 641px) { #collapse { display: none; } }
+
+h2 { font-size: 1.25rem; margin: 20px 0 4px; font-weight: 700; }
+.hint { margin: 0 0 10px; color: var(--muted); font-size: 0.95rem; }
+
+.search { position: relative; margin: 14px 0 6px; }
+.search input {
+  width: 100%; padding: 10px 12px; border: 2px solid var(--ink); border-radius: 8px;
+  background: var(--plate); font-size: 1.05rem;
+}
+#results {
+  position: absolute; z-index: 3; left: 0; right: 0; top: 100%; margin: 4px 0 0; padding: 4px 0;
+  list-style: none; background: var(--plate); border: 2px solid var(--ink); border-radius: 8px;
+}
+#results li { padding: 8px 12px; cursor: pointer; }
+#results li[aria-selected="true"], #results li:hover { background: var(--page); }
+
+.field { margin: 12px 0; }
+.field-name { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 6px; }
+.field-name output { font-weight: 500; color: var(--muted); }
+select {
+  width: 100%; padding: 8px 10px; border: 2px solid var(--ink); border-radius: 8px; background: var(--plate);
+}
+.chips { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.chips button {
+  padding: 6px 0; border: 2px solid var(--ink); border-radius: 6px; background: var(--plate); cursor: pointer; font-weight: 600;
+}
+.chips button[aria-pressed="true"] { background: var(--ink); color: var(--page); }
+.range { display: grid; gap: 4px; }
+.range input { width: 100%; accent-color: var(--red); }
+.total { margin: 6px 0 0; color: var(--muted); }
+
+/* The parking-sign plate for a selected spot */
+.plate {
+  margin-top: 16px; padding: 14px; background: var(--plate);
+  border: 2px solid var(--ink); border-radius: 10px;
+}
+.plate h3 { margin: 0; font-size: 1.4rem; line-height: 1.1; color: var(--red); }
+.plate .sub { margin: 2px 0 12px; color: var(--muted); }
+.big { font-size: 2.6rem; font-weight: 700; line-height: 1; }
+.big-label { margin: 2px 0 12px; }
+.strip-label { font-weight: 600; margin: 10px 0 4px; }
+.strip { display: grid; gap: 2px; }
+.strip.h24 { grid-template-columns: repeat(24, 1fr); }
+.strip.d7 { grid-template-columns: repeat(7, 1fr); }
+.strip span { height: 22px; border-radius: 3px; background: var(--rule); }
+.strip.d7 span { height: 28px; display: grid; place-items: center; font-size: 0.85rem; font-weight: 600; }
+.axis { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+.plate ul { margin: 6px 0 0; padding: 0; list-style: none; }
+.plate li { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--rule); }
+.plate li:last-child { border-bottom: 0; }
+.agent-btn {
+  border: 2px solid var(--ink); background: var(--curb); color: #1d2024; border-radius: 6px;
+  padding: 2px 8px; font-weight: 700; cursor: pointer;
+}
+
+#agent-info p { margin: 4px 0; }
+#stops { margin: 8px 0 0; padding: 0; list-style: none; counter-reset: stop; }
+#stops li {
+  counter-increment: stop; display: grid; grid-template-columns: 2rem 4.5rem 1fr; gap: 6px;
+  padding: 6px 0; border-bottom: 1px solid var(--rule); cursor: pointer;
+}
+#stops li::before {
+  content: counter(stop); display: grid; place-items: center; width: 1.6rem; height: 1.6rem;
+  border-radius: 50%; background: var(--curb); color: #1d2024; border: 2px solid #1d2024; font-weight: 700; font-size: 0.85rem;
+}
+#stops .t { font-weight: 700; }
+#stops .w { color: var(--muted); }
+
+footer { margin-top: 20px; font-size: 0.9rem; color: var(--muted); }
+footer a { color: inherit; }
+
+#loading {
+  position: absolute; z-index: 5; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  padding: 10px 16px; background: var(--plate); border: 2px solid var(--ink); border-radius: 8px; font-weight: 600;
+}
+#loading[hidden] { display: none; }
+
+.maplibregl-ctrl-attrib { font-family: inherit; }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
