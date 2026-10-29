@@ -50,6 +50,11 @@ jobs:
             git pull --rebase origin main && git push || echo "Cache not saved this time; it will be next run."
           fi
 
+      - name: Use the latest site files
+        run: |
+          git fetch origin main
+          git checkout origin/main -- site
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
