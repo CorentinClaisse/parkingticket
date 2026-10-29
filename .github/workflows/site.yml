@@ -1,0 +1,66 @@
+name: Publish site changes
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**"]      # runs by itself whenever you upload files to the site folder
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: publish-site
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Reuse the data already on the live map
+        env:
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          from concurrent.futures import ThreadPoolExecutor
+          base = os.environ["SITE_URL"].rstrip("/") + "/data/"
+          out = "site/data/"
+          os.makedirs(out + "agents", exist_ok=True)
+          def get(path):
+              err = None
+              for attempt in range(4):
+                  try:
+                      with urllib.request.urlopen(base + path, timeout=60) as r:
+                          data = r.read()
+                      with open(out + path, "wb") as f:
+                          f.write(data)
+                      return
+                  except Exception as e:
+                      err = e
+              raise SystemExit(f"Couldn't download {path} from the live map ({err}). Run 'Update map' once first.")
+          for p in ("meta.json", "locations.json", "agents/index.json"):
+              get(p)
+          agents = json.load(open(out + "agents/index.json"))
+          with ThreadPoolExecutor(16) as ex:
+              list(ex.map(lambda a: get(f"agents/{a['id']}.json"), agents))
+          print(f"Reused the live data, including {len(agents)} agent rounds")
+          PY
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
