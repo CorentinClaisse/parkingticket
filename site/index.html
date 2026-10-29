@@ -23,7 +23,8 @@
 
   <div id="panel-body">
     <nav class="tabs" aria-label="Sections">
-      <button type="button" id="tab-explore" aria-pressed="true">Explore the map</button>
+      <button type="button" id="tab-plan" aria-pressed="false">Move my car</button>
+      <button type="button" id="tab-explore" aria-pressed="true">Explore</button>
       <button type="button" id="tab-game" aria-pressed="false">Daily game</button>
     </nav>
 
@@ -58,12 +59,10 @@
 
       <section id="place" hidden aria-live="polite"></section>
 
-      <section class="rounds" aria-label="Agent rounds">
-        <h2>Agent rounds</h2>
-        <p class="hint">Each agent has a random ID that resets every month. Pick one to replay their route.</p>
-        <div class="field">
-          <label class="field-name" for="agent">Agent</label>
-          <select id="agent"><option value="">Choose an agent</option></select>
+      <section class="rounds" aria-label="Agents in this area">
+        <h2>Agents in this area</h2>
+        <div id="area-agents">
+          <p class="hint">Search an address or tap the map to see which agents work that area and when they usually come by.</p>
         </div>
         <div class="field" id="day-field" hidden>
           <label class="field-name" for="aday">Day</label>
@@ -71,10 +70,41 @@
         </div>
         <div id="agent-info"></div>
         <ol id="stops"></ol>
+        <details id="all-agents">
+          <summary>Browse all agents</summary>
+          <div class="field">
+            <label class="field-name sr" for="agent">Agent</label>
+            <select id="agent"><option value="">Choose an agent</option></select>
+          </div>
+        </details>
+        <p class="hint">Agent IDs are random and reset every month, so the same person can appear under a new ID each month.</p>
       </section>
 
       <footer id="about"></footer>
     </div>
+
+    <section id="plan" hidden>
+      <h2>Move my car</h2>
+      <p class="hint">See how risky your spot is for the whole time you’re parked, and find safer blocks nearby.</p>
+      <div class="field">
+        <span class="field-name">Where’s your car?</span>
+        <p id="car-where" class="car-where">Tap the map where your car is parked.</p>
+        <button type="button" id="car-locate" class="secondary">Use my location</button>
+      </div>
+      <div class="field">
+        <span class="field-name">Parked until</span>
+        <div class="fc-when">
+          <label class="sr" for="until-d">Day</label><select id="until-d"></select>
+          <label class="sr" for="until-h">Time</label><select id="until-h"></select>
+        </div>
+        <div class="quick" role="group" aria-label="Quick picks">
+          <button type="button" data-q="morning">Tomorrow morning</button>
+          <button type="button" data-q="evening">Tomorrow evening</button>
+          <button type="button" data-q="monday">Monday morning</button>
+        </div>
+      </div>
+      <div id="plan-out" aria-live="polite"></div>
+    </section>
 
     <section id="game" hidden aria-live="polite"></section>
   </div>
